@@ -1,5 +1,4 @@
 local function PresentColorEditor(label, col, col_d)
-    local changed = false
     local i =
     {
         bit.band(bit.rshift(col, 16), 0xFF),
@@ -52,7 +51,7 @@ local function PresentColorEditor(label, col, col_d)
     return col
 end
 
-local function ConfigurationWindow(configuration)
+local function ConfigurationWindow(configuration, defaults)
     local this =
     {
         title = "Experience Bar - Configuration",
@@ -62,192 +61,196 @@ local function ConfigurationWindow(configuration)
     }
 
     local _configuration = configuration
+    local _defaults = defaults or {}
+    local _resetConfirm = false
+
+    local function applyTooltip(tooltip)
+        if tooltip and imgui.IsItemHovered() then
+            imgui.SetTooltip(tooltip)
+        end
+    end
+
+    local function boolCheckbox(label, key, tooltip)
+        if imgui.Checkbox(label, _configuration[key]) then
+            _configuration[key] = not _configuration[key]
+            this.changed = true
+        end
+        applyTooltip(tooltip)
+    end
+
+    local function flagCheckbox(label, key, flagValue, tooltip)
+        local isOn = _configuration[key] == flagValue
+        if imgui.Checkbox(label, isOn) then
+            _configuration[key] = isOn and "" or flagValue
+            this.changed = true
+        end
+        applyTooltip(tooltip)
+    end
+
+    local function dragInt(id, key, min, max, format)
+        local changed, value = imgui.DragInt(id, _configuration[key], 1.0, min, max, format)
+        if changed then
+            _configuration[key] = value
+            this.changed = true
+        end
+    end
+
+    local function colorEditor(label, key, default)
+        local newColor = PresentColorEditor(label, _configuration[key], default)
+        if newColor ~= _configuration[key] then
+            _configuration[key] = newColor
+            this.changed = true
+        end
+    end
+
+    local function section(label, body)
+        if imgui.TreeNodeEx(label, "DefaultOpen") then
+            body()
+            imgui.TreePop()
+        end
+    end
 
     local _showWindowSettings = function()
-        local success
+        section("XP Bar", function()
+            boolCheckbox("Enable XP Bar Window", "xpEnableWindow")
 
-        if imgui.Checkbox("Enable", _configuration.xpEnableWindow) then
-            _configuration.xpEnableWindow = not _configuration.xpEnableWindow
-            this.changed = true
-        end
+            section("Bar Window Settings", function()
+                flagCheckbox("Disable the title bar", "xpNoTitleBar", "NoTitleBar")
+                flagCheckbox("Disable resizing the window", "xpNoResize", "NoResize")
+                flagCheckbox("Disable moving the window", "xpNoMove", "NoMove")
+                boolCheckbox("Transparent Background", "xpTransparent")
+            end)
 
-        if imgui.Checkbox("Hide when menus are open", _configuration.xpHideWhenMenu) then
-            _configuration.xpHideWhenMenu = not _configuration.xpHideWhenMenu
-            this.changed = true
-        end
-        if imgui.Checkbox("Hide when symbol chat/word select is open", _configuration.xpHideWhenSymbolChat) then
-            _configuration.xpHideWhenSymbolChat = not _configuration.xpHideWhenSymbolChat
-            this.changed = true
-        end
-        if imgui.Checkbox("Hide when the menu is unavailable", _configuration.xpHideWhenMenuUnavailable) then
-            _configuration.xpHideWhenMenuUnavailable = not _configuration.xpHideWhenMenuUnavailable
-            this.changed = true
-        end
+            section("Hide when", function()
+                boolCheckbox("Menus are open", "xpHideWhenMenu")
+                boolCheckbox("Symbol chat/word select is open", "xpHideWhenSymbolChat")
+                boolCheckbox("The menu is unavailable", "xpHideWhenMenuUnavailable",
+                    "Hides the bar in places where the in-game menu can't be opened (e.g., lobbies, character select).")
+            end)
 
-        if imgui.Checkbox("Show default instead of error", _configuration.xpShowDefaultNotError) then
-            _configuration.xpShowDefaultNotError = not _configuration.xpShowDefaultNotError
-            this.changed = true
-        end
+            section("Styling", function()
+                colorEditor("Bar fill color", "xpBarColor", 0xFFE6B300)
+                colorEditor("Percentage text color", "xpBarPercentColor", 0xFFFFFFFF)
+                boolCheckbox("Disable percentage text", "xpBarNoOverlay")
+                boolCheckbox("Display as a vertical bar", "xpVerticalBar")
+            end)
 
-        if imgui.Checkbox("No title bar", _configuration.xpNoTitleBar == "NoTitleBar") then
-            if _configuration.xpNoTitleBar == "NoTitleBar" then
-                _configuration.xpNoTitleBar = ""
-            else
-                _configuration.xpNoTitleBar = "NoTitleBar"
-            end
-            this.changed = true
-        end
-
-        if imgui.Checkbox("No resize", _configuration.xpNoResize == "NoResize") then
-            if _configuration.xpNoResize == "NoResize" then
-                _configuration.xpNoResize = ""
-            else
-                _configuration.xpNoResize = "NoResize"
-            end
-            this.changed = true
-        end
-        if imgui.Checkbox("No Move", _configuration.xpNoMove == "NoMove") then
-            if _configuration.xpNoMove == "NoMove" then
-                _configuration.xpNoMove = ""
-            else
-                _configuration.xpNoMove = "NoMove"
-            end
-            this.changed = true
-        end
-
-        if imgui.Checkbox("Transparent Background", _configuration.xpTransparent) then
-            _configuration.xpTransparent = not _configuration.xpTransparent
-            this.changed = true
-        end
-
-        if imgui.Checkbox("Enable Info Level", _configuration.xpEnableInfoLevel) then
-            _configuration.xpEnableInfoLevel = not _configuration.xpEnableInfoLevel
-            this.changed = true
-        end
-        if imgui.Checkbox("Enable Info Total Exp", _configuration.xpEnableInfoTotal) then
-            _configuration.xpEnableInfoTotal = not _configuration.xpEnableInfoTotal
-            this.changed = true
-        end
-        if imgui.Checkbox("Enable Info To Next Level Exp", _configuration.xpEnableInfoTNL) then
-            _configuration.xpEnableInfoTNL = not _configuration.xpEnableInfoTNL
-            this.changed = true
-        end
-
-        if imgui.Checkbox("XP bar no overlay", _configuration.xpBarNoOverlay) then
-            _configuration.xpBarNoOverlay = not _configuration.xpBarNoOverlay
-            this.changed = true
-        end
-
-        if imgui.Checkbox("Vertical Bar", _configuration.xpVerticalBar) then
-            _configuration.xpVerticalBar = not _configuration.xpVerticalBar
-            this.changed = true
-        end
-
-        local oldColor = _configuration.xpBarColor
-        _configuration.xpBarColor = PresentColorEditor("XP bar color", _configuration.xpBarColor, 0xFFE6B300)
-        if oldColor ~= _configuration.xpBarColor then
-            this.changed = true
-        end
-
-        imgui.PushItemWidth(110)
-        changedDragInt, _configuration.xpBarX = imgui.DragInt("##X", _configuration.xpBarX, 1.0, 0, 0, "X: %4.0f")
-        if changedDragInt then
-            this.changed = true
-        end
-
-        imgui.SameLine(0, 5)
-        changedDragInt, _configuration.xpBarY = imgui.DragInt("##Y", _configuration.xpBarY, 1.0, 0, 0, "Y: %4.0f")
-        if changedDragInt then
-            this.changed = true
-        end
-
-        changedDragInt, _configuration.xpBarWidth = imgui.DragInt("##W", _configuration.xpBarWidth, 1.0, -1, 1920, "Width: %4.0f")
-        if changedDragInt then
-            this.changed = true
-        end
-
-        imgui.SameLine(0, 5)
-        changedDragInt, _configuration.xpBarHeight = imgui.DragInt("##H", _configuration.xpBarHeight, 1.0, 0, 1080, "Height: %4.0f")
-        if changedDragInt then
-            this.changed = true
-        end
-        imgui.PopItemWidth()
-
-        -- Text Window Settings section
-        if imgui.CollapsingHeader("Text Window Settings") then
-            -- Move the enable option here
-            if imgui.Checkbox("Enable Text Window", _configuration.xpTextEnableWindow) then
-                _configuration.xpTextEnableWindow = not _configuration.xpTextEnableWindow
-                this.changed = true
-            end
-
-            -- Only show these options if text window is enabled
-            if _configuration.xpTextEnableWindow then
-                if imgui.Checkbox("Hide text when menus are open", _configuration.xpTextHideWhenMenu) then
-                    _configuration.xpTextHideWhenMenu = not _configuration.xpTextHideWhenMenu
-                    this.changed = true
-                end
-
-                if imgui.Checkbox("Hide text when symbol chat/word select is open", _configuration.xpTextHideWhenSymbolChat) then
-                    _configuration.xpTextHideWhenSymbolChat = not _configuration.xpTextHideWhenSymbolChat
-                    this.changed = true
-                end
-
-                if imgui.Checkbox("Hide text when the menu is unavailable", _configuration.xpTextHideWhenMenuUnavailable) then
-                    _configuration.xpTextHideWhenMenuUnavailable = not _configuration.xpTextHideWhenMenuUnavailable
-                    this.changed = true
-                end
-
-                if imgui.Checkbox("Text window no title bar", _configuration.xpTextNoTitleBar == "NoTitleBar") then
-                    if _configuration.xpTextNoTitleBar == "NoTitleBar" then
-                        _configuration.xpTextNoTitleBar = ""
-                    else
-                        _configuration.xpTextNoTitleBar = "NoTitleBar"
-                    end
-                    this.changed = true
-                end
-
-                if imgui.Checkbox("Text window no resize", _configuration.xpTextNoResize == "NoResize") then
-                    if _configuration.xpTextNoResize == "NoResize" then
-                        _configuration.xpTextNoResize = ""
-                    else
-                        _configuration.xpTextNoResize = "NoResize"
-                    end
-                    this.changed = true
-                end
-
-                if imgui.Checkbox("Text window no move", _configuration.xpTextNoMove == "NoMove") then
-                    if _configuration.xpTextNoMove == "NoMove" then
-                        _configuration.xpTextNoMove = ""
-                    else
-                        _configuration.xpTextNoMove = "NoMove"
-                    end
-                    this.changed = true
-                end
-
-                if imgui.Checkbox("Text window transparent background", _configuration.xpTextTransparent) then
-                    _configuration.xpTextTransparent = not _configuration.xpTextTransparent
-                    this.changed = true
-                end
-
-                local oldPercentColor = _configuration.xpBarPercentColor
-                _configuration.xpBarPercentColor = PresentColorEditor("Percentage text color", _configuration.xpBarPercentColor, 0xFFFFFFFF)
-                if oldPercentColor ~= _configuration.xpBarPercentColor then
-                    this.changed = true
-                end
-                
+            section("Positioning", function()
                 imgui.PushItemWidth(110)
-                changedDragInt, _configuration.xpTextX = imgui.DragInt("##TextX", _configuration.xpTextX, 1.0, 0, 0, "Text X: %4.0f")
-                if changedDragInt then
-                    this.changed = true
-                end
-
+                dragInt("##X", "xpBarX", 0, 0, "Position X: %4.0f")
                 imgui.SameLine(0, 5)
-                changedDragInt, _configuration.xpTextY = imgui.DragInt("##TextY", _configuration.xpTextY, 1.0, 0, 0, "Text Y: %4.0f")
-                if changedDragInt then
-                    this.changed = true
-                end
+                dragInt("##Y", "xpBarY", 0, 0, "Position Y: %4.0f")
+                dragInt("##W", "xpBarWidth", -1, 1920, "Width: %4.0f")
+                imgui.SameLine(0, 5)
+                dragInt("##H", "xpBarHeight", 0, 1080, "Height: %4.0f")
                 imgui.PopItemWidth()
+            end)
+
+            section("Advanced", function()
+                boolCheckbox("Show default instead of error", "xpShowDefaultNotError",
+                    "When character data isn't loaded yet (e.g., on the title screen), show a 0% bar instead of an error message.")
+            end)
+        end)
+
+        section("Text Stats", function()
+            imgui.Text("Stats can appear inside the bar window, or in their")
+            imgui.Text("own separate window(s) when 'Enable Text Window' is on.")
+            imgui.Dummy(1, 4)
+            boolCheckbox("Enable Text Window", "textwindow_enable")
+
+            section("Stats to Show", function()
+                boolCheckbox("Level", "xpEnableInfoLevel")
+                boolCheckbox("Total Exp", "xpEnableInfoTotal")
+                boolCheckbox("To Next Level Exp", "xpEnableInfoTNL")
+                boolCheckbox(
+                    _configuration.xpRatePerHour and "XP per hour (60s avg)" or "XP per minute (60s avg)",
+                    "xpEnableInfoRate"
+                )
+                if _configuration.xpEnableInfoRate then
+                    imgui.Dummy(20, 1)
+                    imgui.SameLine(0, 0)
+                    boolCheckbox("Show rate as per hour (otherwise per minute)", "xpRatePerHour",
+                        "Always averaged over the last 60 seconds; this toggle only changes the display unit.")
+                end
+                boolCheckbox("ETA to next level", "xpEnableInfoETA")
+            end)
+
+            if _configuration.textwindow_enable then
+                section("Text Window Appearance", function()
+                    flagCheckbox("No title bar", "textwindow_noTitleBar", "NoTitleBar")
+                    flagCheckbox("No resize", "textwindow_noResize", "NoResize")
+                    flagCheckbox("No move", "textwindow_noMove", "NoMove")
+                    boolCheckbox("Transparent background", "textwindow_transparent")
+                    colorEditor("Text color", "textwindow_percentColor", 0xFFFFFFFF)
+                end)
+
+                section("Hide text when", function()
+                    boolCheckbox("Menus are open", "textwindow_hideWhenMenuOpen")
+                    boolCheckbox("Symbol chat/word select is open", "textwindow_hideWhenSymbolChatOpen")
+                    boolCheckbox("The menu is unavailable", "textwindow_hideWhenMenuNotAvailable",
+                        "Hides the text in places where the in-game menu can't be opened (e.g., lobbies, character select).")
+                end)
+
+                section("Text Positioning", function()
+                    boolCheckbox("Split each stat into its own window", "textwindow_splitWindows",
+                        "When on, each enabled stat gets its own moveable window so you can scatter them around the screen.")
+                    imgui.PushItemWidth(110)
+                    if _configuration.textwindow_splitWindows then
+                        imgui.Text("Level")
+                        dragInt("##LvX", "stat_level_x", 0, 0, "X: %4.0f")
+                        imgui.SameLine(0, 5)
+                        dragInt("##LvY", "stat_level_y", 0, 0, "Y: %4.0f")
+
+                        imgui.Text("Total Exp")
+                        dragInt("##TotX", "stat_total_x", 0, 0, "X: %4.0f")
+                        imgui.SameLine(0, 5)
+                        dragInt("##TotY", "stat_total_y", 0, 0, "Y: %4.0f")
+
+                        imgui.Text("TNL")
+                        dragInt("##TnlX", "stat_tnl_x", 0, 0, "X: %4.0f")
+                        imgui.SameLine(0, 5)
+                        dragInt("##TnlY", "stat_tnl_y", 0, 0, "Y: %4.0f")
+
+                        imgui.Text("XP/min")
+                        dragInt("##RtX", "stat_rate_x", 0, 0, "X: %4.0f")
+                        imgui.SameLine(0, 5)
+                        dragInt("##RtY", "stat_rate_y", 0, 0, "Y: %4.0f")
+
+                        imgui.Text("ETA")
+                        dragInt("##EtaX", "stat_eta_x", 0, 0, "X: %4.0f")
+                        imgui.SameLine(0, 5)
+                        dragInt("##EtaY", "stat_eta_y", 0, 0, "Y: %4.0f")
+                    else
+                        dragInt("##TextX", "textwindow_x", 0, 0, "Position X: %4.0f")
+                        imgui.SameLine(0, 5)
+                        dragInt("##TextY", "textwindow_y", 0, 0, "Position Y: %4.0f")
+                    end
+                    imgui.PopItemWidth()
+                end)
+            end
+        end)
+
+        imgui.Dummy(1, 8)
+        imgui.Separator()
+        imgui.Dummy(1, 4)
+
+        if _resetConfirm then
+            imgui.Text("Reset all settings to defaults?")
+            imgui.SameLine(0, 8)
+            if imgui.Button("Confirm") then
+                for k, v in pairs(_defaults) do
+                    _configuration[k] = v
+                end
+                this.changed = true
+                _resetConfirm = false
+            end
+            imgui.SameLine(0, 4)
+            if imgui.Button("Cancel") then
+                _resetConfirm = false
+            end
+        else
+            if imgui.Button("Reset to Defaults") then
+                _resetConfirm = true
             end
         end
     end
@@ -257,13 +260,14 @@ local function ConfigurationWindow(configuration)
             return
         end
 
-        local success
-
         imgui.SetNextWindowSize(500, 400, 'FirstUseEver')
-        success, this.open = imgui.Begin(this.title, this.open)
+        local visible
+        visible, this.open = imgui.Begin(this.title, this.open)
         imgui.SetWindowFontScale(this.fontScale)
 
-        _showWindowSettings()
+        if visible then
+            _showWindowSettings()
+        end
 
         imgui.End()
     end

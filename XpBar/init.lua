@@ -20,8 +20,7 @@ local function _getMenuState()
     }
     local address = 0
     local value = -1
-    local bad_read = false
-    for k, v in pairs(offsets) do
+    for _, v in ipairs(offsets) do
         if address ~= -1 then
             address = pso.read_u32(address + v)
             if address == 0 then
@@ -48,137 +47,215 @@ local function IsMenuUnavailable()
     local menuState = _getMenuState()
     return menuState == -1
 end
-local function NotNilOrDefault(value, default)
-    if value == nil then
-        return default
-    else
-        return value
-    end
-end
 -- End of helpers in solylib
 
 -- Global variable to store stats for text window
 local StatsWindow = {
     currentLevel = 0,
     currentExp = 0,
-    expToNextLevel = 0
+    expToNextLevel = 0,
+    xpPerSecond = 0,
+    etaSeconds = -1,
 }
 
-if optionsLoaded then
-    -- If options loaded, make sure we have all those we need
-    options.configurationEnableWindow     = NotNilOrDefault(options.configurationEnableWindow, true)
-    options.enable                        = NotNilOrDefault(options.enable, true)
-    options.xpEnableWindow                = NotNilOrDefault(options.xpEnableWindow, true)
-    options.xpHideWhenMenu                = NotNilOrDefault(options.xpHideWhenMenu, true)
-    options.xpHideWhenSymbolChat          = NotNilOrDefault(options.xpHideWhenSymbolChat, true)
-    options.xpHideWhenMenuUnavailable     = NotNilOrDefault(options.xpHideWhenMenuUnavailable, true)
-    options.xpShowDefaultNotError         = NotNilOrDefault(options.xpShowDefaultNotError, false)
-    options.xpNoTitleBar                  = NotNilOrDefault(options.xpNoTitleBar, "")
-    options.xpNoResize                    = NotNilOrDefault(options.xpNoResize, "")
-    options.xpNoMove                      = NotNilOrDefault(options.xpNoMove, "")
-    options.xpTransparent                 = NotNilOrDefault(options.xpTransparent, false)
-    options.xpEnableInfoLevel             = NotNilOrDefault(options.xpEnableInfoLevel, true)
-    options.xpEnableInfoTotal             = NotNilOrDefault(options.xpEnableInfoTotal, true)
-    options.xpEnableInfoTNL               = NotNilOrDefault(options.xpEnableInfoTNL, true)
-    options.xpBarNoOverlay                = NotNilOrDefault(options.xpBarNoOverlay, false)
-    options.xpBarColor                    = NotNilOrDefault(options.xpBarColor, 0xFFE6B300)
-    options.xpBarPercentColor             = NotNilOrDefault(options.xpBarPercentColor, 0xFFFFFFFF)
-    options.xpBarX                        = NotNilOrDefault(options.xpBarX, 50)
-    options.xpBarY                        = NotNilOrDefault(options.xpBarY, 50)
-    options.xpBarWidth                    = NotNilOrDefault(options.xpBarWidth, -1)
-    options.xpBarHeight                   = NotNilOrDefault(options.xpBarHeight, 0)
-    options.xpVerticalBar                 = NotNilOrDefault(options.xpVerticalBar, false)
-    options.xpTextEnableWindow            = NotNilOrDefault(options.xpTextEnableWindow, false)
-    options.xpTextHideWhenMenu            = NotNilOrDefault(options.xpTextHideWhenMenu, true)
-    options.xpTextHideWhenSymbolChat      = NotNilOrDefault(options.xpTextHideWhenSymbolChat, true)
-    options.xpTextHideWhenMenuUnavailable = NotNilOrDefault(options.xpTextHideWhenMenuUnavailable, true)
-    options.xpTextNoTitleBar              = NotNilOrDefault(options.xpTextNoTitleBar, "")
-    options.xpTextNoResize                = NotNilOrDefault(options.xpTextNoResize, "")
-    options.xpTextNoMove                  = NotNilOrDefault(options.xpTextNoMove, "")
-    options.xpTextTransparent             = NotNilOrDefault(options.xpTextTransparent, false)
-    options.xpTextX                       = NotNilOrDefault(options.xpTextX, 200)
-    options.xpTextY                       = NotNilOrDefault(options.xpTextY, 50)
-else
-    options =
-    {
-        configurationEnableWindow = true,
-        enable = true,
-        xpEnableWindow = true,
-        xpHideWhenMenu = false,
-        xpHideWhenSymbolChat = false,
-        xpHideWhenMenuUnavailable = false,
-        xpShowDefaultNotError = false,
-        xpNoTitleBar = "",
-        xpNoResize = "",
-        xpNoMove = "",
-        xpTransparent = false,
-        xpEnableInfoLevel = true,
-        xpEnableInfoTotal = true,
-        xpEnableInfoTNL = true,
-        xpBarNoOverlay = false,
-        xpBarColor = 0xFFE6B300,
-        xpBarPercentColor = 0xFFFFFFFF,
-        xpBarX = 50,
-        xpBarY = 50,
-        xpBarWidth = -1,
-        xpBarHeight = 0,
-        xpVerticalBar = false,
-        xpTextEnableWindow = false,
-        xpTextHideWhenMenu = true,
-        xpTextHideWhenSymbolChat = true,
-        xpTextHideWhenMenuUnavailable = true,
-        xpTextNoTitleBar = "",
-        xpTextNoResize = "",
-        xpTextNoMove = "",
-        xpTextTransparent = false,
-        xpTextX = 200,
-        xpTextY = 50,
-    }
+-- Sliding-window XP rate tracker (per-second precision)
+local XpTracker = {
+    samples = {},
+    windowSeconds = 60,
+}
+
+local function UpdateXpTracker(currentExp)
+    local now = os.time()
+    local samples = XpTracker.samples
+
+    -- Character switch (exp went backwards): drop history
+    if #samples > 0 and currentExp < samples[#samples].exp then
+        XpTracker.samples = {}
+        samples = XpTracker.samples
+    end
+
+    if #samples > 0 and samples[#samples].time == now then
+        samples[#samples].exp = currentExp
+    else
+        samples[#samples + 1] = { time = now, exp = currentExp }
+    end
+
+    local cutoff = now - XpTracker.windowSeconds
+    while #samples > 1 and samples[1].time < cutoff do
+        table.remove(samples, 1)
+    end
 end
+
+local function GetXpPerSecond()
+    local samples = XpTracker.samples
+    if #samples < 2 then
+        return 0
+    end
+    local oldest = samples[1]
+    local newest = samples[#samples]
+    local dt = newest.time - oldest.time
+    if dt <= 0 then
+        return 0
+    end
+    return (newest.exp - oldest.exp) / dt
+end
+
+local function FormatComma(n)
+    local s = string.format("%d", math.floor(n))
+    local sign = ""
+    if s:sub(1, 1) == "-" then
+        sign = "-"
+        s = s:sub(2)
+    end
+    s = s:reverse():gsub("(%d%d%d)", "%1,"):reverse()
+    s = s:gsub("^,", "")
+    return sign .. s
+end
+
+local function FormatDuration(seconds)
+    seconds = math.floor(seconds)
+    if seconds < 60 then
+        return string.format("%ds", seconds)
+    elseif seconds < 3600 then
+        return string.format("%dm %ds", math.floor(seconds / 60), seconds % 60)
+    elseif seconds < 86400 then
+        return string.format("%dh %dm", math.floor(seconds / 3600), math.floor((seconds % 3600) / 60))
+    else
+        return string.format("%dd %dh", math.floor(seconds / 86400), math.floor((seconds % 86400) / 3600))
+    end
+end
+
+local DEFAULTS = {
+    configurationEnableWindow = true,
+    enable = true,
+
+    xpEnableWindow = true,
+    xpHideWhenMenu = true,
+    xpHideWhenSymbolChat = true,
+    xpHideWhenMenuUnavailable = true,
+    xpShowDefaultNotError = false,
+    xpNoTitleBar = "",
+    xpNoResize = "",
+    xpNoMove = "",
+    xpTransparent = false,
+    xpEnableInfoLevel = true,
+    xpEnableInfoTotal = true,
+    xpEnableInfoTNL = true,
+    xpEnableInfoRate = false,
+    xpEnableInfoETA = false,
+    xpRatePerHour = false,
+    xpBarNoOverlay = false,
+    xpBarColor = 0xFFE6B300,
+    xpBarPercentColor = 0xFFFFFFFF,
+    xpBarX = 50,
+    xpBarY = 50,
+    xpBarWidth = -1,
+    xpBarHeight = 0,
+    xpVerticalBar = false,
+
+    textwindow_enable = false,
+    textwindow_splitWindows = false,
+    textwindow_hideWhenMenuOpen = true,
+    textwindow_hideWhenSymbolChatOpen = true,
+    textwindow_hideWhenMenuNotAvailable = true,
+    textwindow_noTitleBar = "",
+    textwindow_noResize = "",
+    textwindow_noMove = "",
+    textwindow_transparent = false,
+    textwindow_x = 200,
+    textwindow_y = 50,
+    textwindow_percentColor = 0xFFFFFFFF,
+
+    stat_level_x = 200, stat_level_y = 50,
+    stat_total_x = 200, stat_total_y = 70,
+    stat_tnl_x   = 200, stat_tnl_y   = 90,
+    stat_rate_x  = 200, stat_rate_y  = 110,
+    stat_eta_x   = 200, stat_eta_y   = 130,
+}
+
+if not optionsLoaded then
+    options = {}
+end
+for k, v in pairs(DEFAULTS) do
+    if options[k] == nil then
+        options[k] = v
+    end
+end
+
+local SAVE_FIELDS = {
+    { "configurationEnableWindow",            "bool"  },
+    { "enable",                               "bool"  },
+    { nil,                                    "blank" },
+    { "xpEnableWindow",                       "bool"  },
+    { "xpHideWhenMenu",                       "bool"  },
+    { "xpHideWhenSymbolChat",                 "bool"  },
+    { "xpHideWhenMenuUnavailable",            "bool"  },
+    { "xpShowDefaultNotError",                "bool"  },
+    { "xpNoTitleBar",                         "str"   },
+    { "xpNoResize",                           "str"   },
+    { "xpNoMove",                             "str"   },
+    { "xpTransparent",                        "bool"  },
+    { "xpEnableInfoLevel",                    "bool"  },
+    { "xpEnableInfoTotal",                    "bool"  },
+    { "xpEnableInfoTNL",                      "bool"  },
+    { "xpEnableInfoRate",                     "bool"  },
+    { "xpEnableInfoETA",                      "bool"  },
+    { "xpRatePerHour",                        "bool"  },
+    { "xpBarNoOverlay",                       "bool"  },
+    { "xpBarColor",                           "color" },
+    { "xpBarPercentColor",                    "color" },
+    { "xpBarX",                               "num"   },
+    { "xpBarY",                               "num"   },
+    { "xpBarWidth",                           "num"   },
+    { "xpBarHeight",                          "num"   },
+    { "xpVerticalBar",                        "bool"  },
+    { "textwindow_enable",                    "bool"  },
+    { "textwindow_splitWindows",              "bool"  },
+    { "textwindow_hideWhenMenuOpen",          "bool"  },
+    { "textwindow_hideWhenSymbolChatOpen",    "bool"  },
+    { "textwindow_hideWhenMenuNotAvailable",  "bool"  },
+    { "textwindow_noTitleBar",                "str"   },
+    { "textwindow_noResize",                  "str"   },
+    { "textwindow_noMove",                    "str"   },
+    { "textwindow_transparent",               "bool"  },
+    { "textwindow_x",                         "num"   },
+    { "textwindow_y",                         "num"   },
+    { "textwindow_percentColor",              "color" },
+    { "stat_level_x",                         "num"   },
+    { "stat_level_y",                         "num"   },
+    { "stat_total_x",                         "num"   },
+    { "stat_total_y",                         "num"   },
+    { "stat_tnl_x",                           "num"   },
+    { "stat_tnl_y",                           "num"   },
+    { "stat_rate_x",                          "num"   },
+    { "stat_rate_y",                          "num"   },
+    { "stat_eta_x",                           "num"   },
+    { "stat_eta_y",                           "num"   },
+}
 
 local function SaveOptions(options)
     local file = io.open(optionsFileName, "w")
-    if file ~= nil then
-        io.output(file)
-
-        io.write("return {\n")
-        io.write(string.format("configurationEnableWindow = %s,\n", tostring(options.configurationEnableWindow)))
-        io.write(string.format("enable = %s,\n", tostring(options.enable)))
-        io.write("\n")
-        io.write(string.format("xpEnableWindow = %s,\n", tostring(options.xpEnableWindow)))
-        io.write(string.format("xpHideWhenMenu = %s,\n", tostring(options.xpHideWhenMenu)))
-        io.write(string.format("xpHideWhenSymbolChat = %s,\n", tostring(options.xpHideWhenSymbolChat)))
-        io.write(string.format("xpHideWhenMenuUnavailable = %s,\n", tostring(options.xpHideWhenMenuUnavailable)))
-        io.write(string.format("xpShowDefaultNotError = %s,\n", tostring(options.xpShowDefaultNotError)))
-        io.write(string.format("xpNoTitleBar = \"%s\",\n", options.xpNoTitleBar))
-        io.write(string.format("xpNoResize = \"%s\",\n", options.xpNoResize))
-        io.write(string.format("xpNoMove = \"%s\",\n", options.xpNoMove))
-        io.write(string.format("xpTransparent = %s,\n", tostring(options.xpTransparent)))
-        io.write(string.format("xpEnableInfoLevel = %s,\n", tostring(options.xpEnableInfoLevel)))
-        io.write(string.format("xpEnableInfoTotal = %s,\n", tostring(options.xpEnableInfoTotal)))
-        io.write(string.format("xpEnableInfoTNL = %s,\n", tostring(options.xpEnableInfoTNL)))
-        io.write(string.format("xpBarNoOverlay = %s,\n", tostring(options.xpBarNoOverlay)))
-        io.write(string.format("xpBarColor = 0x%08X,\n", options.xpBarColor))
-        io.write(string.format("xpBarPercentColor = 0x%08X,\n", options.xpBarPercentColor))
-        io.write(string.format("xpBarX = %f,\n", options.xpBarX))
-        io.write(string.format("xpBarY = %f,\n", options.xpBarY))
-        io.write(string.format("xpBarWidth = %f,\n", options.xpBarWidth))
-        io.write(string.format("xpBarHeight = %f,\n", options.xpBarHeight))
-        io.write(string.format("xpVerticalBar = %s,\n", tostring(options.xpVerticalBar)))
-        io.write(string.format("xpTextEnableWindow = %s,\n", tostring(options.xpTextEnableWindow)))
-        io.write(string.format("xpTextHideWhenMenu = %s,\n", tostring(options.xpTextHideWhenMenu)))
-        io.write(string.format("xpTextHideWhenSymbolChat = %s,\n", tostring(options.xpTextHideWhenSymbolChat)))
-        io.write(string.format("xpTextHideWhenMenuUnavailable = %s,\n", tostring(options.xpTextHideWhenMenuUnavailable)))
-        io.write(string.format("xpTextNoTitleBar = \"%s\",\n", options.xpTextNoTitleBar))
-        io.write(string.format("xpTextNoResize = \"%s\",\n", options.xpTextNoResize))
-        io.write(string.format("xpTextNoMove = \"%s\",\n", options.xpTextNoMove))
-        io.write(string.format("xpTextTransparent = %s,\n", tostring(options.xpTextTransparent)))
-        io.write(string.format("xpTextX = %f,\n", options.xpTextX))
-        io.write(string.format("xpTextY = %f,\n", options.xpTextY))
-        io.write("}\n")
-
-        io.close(file)
+    if file == nil then
+        return
     end
+
+    file:write("return {\n")
+    for _, field in ipairs(SAVE_FIELDS) do
+        local name, kind = field[1], field[2]
+        if kind == "blank" then
+            file:write("\n")
+        elseif kind == "bool" then
+            file:write(string.format("%s = %s,\n", name, tostring(options[name])))
+        elseif kind == "str" then
+            file:write(string.format("%s = %q,\n", name, options[name]))
+        elseif kind == "color" then
+            file:write(string.format("%s = 0x%08X,\n", name, options[name]))
+        elseif kind == "num" then
+            file:write(string.format("%s = %f,\n", name, options[name]))
+        end
+    end
+    file:write("}\n")
+    file:close()
 end
 
 local function GetColorAsFloats(color)
@@ -193,7 +270,7 @@ local function GetColorAsFloats(color)
 end
 
 local imguiProgressBar = function(progress, color, percentColor)
-    color = color or 0xE6B300FF
+    color = color or 0xFFE6B300
     percentColor = percentColor or 0xFFFFFFFF
 
     if progress == nil then
@@ -209,72 +286,48 @@ local imguiProgressBar = function(progress, color, percentColor)
     local c = GetColorAsFloats(color)
 
     if options.xpVerticalBar then
-        -- For vertical mode, maintain the same parameter meaning
-        -- Width = horizontal size, Height = vertical size
-        local barWidth, barHeight
+        local barWidth = options.xpBarWidth > 0 and options.xpBarWidth or 20
+        local barHeight = options.xpBarHeight > 0 and options.xpBarHeight or 100
 
-        -- Use width parameter for horizontal dimension
-        if options.xpBarWidth > 0 then
-            barWidth = options.xpBarWidth
-        else
-            barWidth = 20 -- Default width for vertical bar
-        end
+        local filledHeight = barHeight * progress
+        local emptyHeight = barHeight - filledHeight
 
-        -- Use height parameter for vertical dimension
-        if options.xpBarHeight > 0 then
-            barHeight = options.xpBarHeight
-        else
-            barHeight = 100 -- Default height for vertical bar
-        end
-
-        -- Set a fixed size for the vertical bar area
         imgui.BeginChild("VertBar", barWidth, barHeight, false)
 
-        -- Calculate how many segments to draw (more segments = smoother appearance)
-        local segments = 20
-        local segmentHeight = barHeight / segments
+        imgui.PushStyleColor("PlotHistogram", c.r, c.g, c.b, c.a)
+        imgui.PushStyleVar_2("ItemSpacing", 0, 0)
+        imgui.PushStyleVar_2("FramePadding", 0, 0)
 
-        -- Draw each segment as a horizontal progress bar
-        for i = 0, segments - 1 do
-            local segmentY = barHeight - ((i + 1) * segmentHeight) -- Position from bottom
-            imgui.SetCursorPos(0, segmentY)
-
-            local segmentProgress = 0
-            if (i / segments) < progress then
-                segmentProgress = 1.0 -- Fill completely
-            end
-
-            -- Draw segment
-            imgui.PushStyleColor("PlotHistogram", c.r, c.g, c.b, c.a)
-            imgui.ProgressBar(segmentProgress, barWidth, segmentHeight, "")
-            imgui.PopStyleColor()
+        if emptyHeight >= 1 then
+            imgui.SetCursorPos(0, 0)
+            imgui.ProgressBar(0, barWidth, emptyHeight, "")
+        end
+        if filledHeight >= 1 then
+            imgui.SetCursorPos(0, emptyHeight)
+            imgui.ProgressBar(1, barWidth, filledHeight, "")
         end
 
-        -- Show percentage sideways if needed
-        if not options.xpBarNoOverlay and overlay == nil then
-            local percentText = string.format("%d%%", math.floor(progress * 100))
+        imgui.PopStyleVar(2)
+        imgui.PopStyleColor()
 
-            -- Get and apply the custom percentage text color
+        if not options.xpBarNoOverlay then
+            local percentText = string.format("%d%%", math.floor(progress * 100))
             local pc = GetColorAsFloats(percentColor)
             imgui.PushStyleColor("Text", pc.r, pc.g, pc.b, pc.a)
 
-            -- Calculate position for vertical text
-            local charHeight = 14 -- Approximate height of each character
+            local charHeight = 14
             local totalTextHeight = #percentText * charHeight
             local startY = (barHeight - totalTextHeight) / 2
 
-            -- Display each character vertically
             for i = 1, #percentText do
                 local char = string.sub(percentText, i, i)
                 local charWidth = imgui.CalcTextSize(char)
                 local xPos = (barWidth - charWidth) / 2
-                local yPos = startY + ((i-1) * charHeight)
-
+                local yPos = startY + ((i - 1) * charHeight)
                 imgui.SetCursorPos(xPos, yPos)
                 imgui.Text(char)
             end
 
-            -- Pop the color style
             imgui.PopStyleColor()
         end
 
@@ -297,33 +350,59 @@ local imguiProgressBar = function(progress, color, percentColor)
     end
 end
 
+local STAT_VALUE_COLUMN = 60
+
+local function StatRow(label, value)
+    imgui.Text(label)
+    imgui.SameLine(STAT_VALUE_COLUMN)
+    imgui.Text(value)
+end
+
 -- Function to render stats text (used by both main window and separate text window)
-local function RenderStatsText(currentLevel, currentExp, expToNextLevel)
+local function RenderStatsText(currentLevel, currentExp, expToNextLevel, xpPerSecond, etaSeconds)
     if options.xpEnableInfoLevel then
-        imgui.Text(string.format("Lv    : %i", currentLevel + 1))
+        StatRow("Lv", string.format("%i", currentLevel + 1))
     end
 
     if options.xpEnableInfoTotal then
-        imgui.Text(string.format("Total : %i", currentExp))
+        StatRow("Total", FormatComma(currentExp))
     end
 
     if options.xpEnableInfoTNL then
-        imgui.Text(string.format("TNL   : %i", expToNextLevel))
+        StatRow("TNL", FormatComma(expToNextLevel))
+    end
+
+    if options.xpEnableInfoRate then
+        local label, multiplier
+        if options.xpRatePerHour then
+            label, multiplier = "XP/hr", 3600
+        else
+            label, multiplier = "XP/min", 60
+        end
+        StatRow(label, FormatComma((xpPerSecond or 0) * multiplier))
+    end
+
+    if options.xpEnableInfoETA then
+        if etaSeconds and etaSeconds > 0 then
+            StatRow("ETA", FormatDuration(etaSeconds))
+        else
+            StatRow("ETA", "--")
+        end
     end
 end
 
 -- Validate and render the bar given the pre-determined values
-local renderBarAndText = function(currentLevel, currentExp, expToNextLevel, progressAsFraction)
+local renderBarAndText = function(currentLevel, currentExp, expToNextLevel, progressAsFraction, xpPerSecond, etaSeconds)
     if options.xpVerticalBar then
         -- For vertical layout, put the bar on the left and text on the right
         imguiProgressBar(progressAsFraction, options.xpBarColor, options.xpBarPercentColor)
 
         -- Only show text in main window if not using separate text window
-        if not options.xpTextEnableWindow then
+        if not options.textwindow_enable then
             imgui.SameLine()
 
             imgui.BeginGroup()
-            RenderStatsText(currentLevel, currentExp, expToNextLevel)
+            RenderStatsText(currentLevel, currentExp, expToNextLevel, xpPerSecond, etaSeconds)
             imgui.EndGroup()
         end
     else
@@ -331,8 +410,8 @@ local renderBarAndText = function(currentLevel, currentExp, expToNextLevel, prog
         imguiProgressBar(progressAsFraction, options.xpBarColor, options.xpBarPercentColor)
 
         -- Only show text in main window if not using separate text window
-        if not options.xpTextEnableWindow then
-            RenderStatsText(currentLevel, currentExp, expToNextLevel)
+        if not options.textwindow_enable then
+            RenderStatsText(currentLevel, currentExp, expToNextLevel, xpPerSecond, etaSeconds)
         end
     end
 end
@@ -341,7 +420,7 @@ local renderError = function(errorMsg)
     if (options.xpShowDefaultNotError == false) then
         imgui.Text(errorMsg)
     else
-        renderBarAndText(0, 0, 50, 0)
+        renderBarAndText(0, 0, 50, 0, 0, -1)
     end
 end
 
@@ -380,18 +459,29 @@ local DrawStuff = function()
 
     local thisLevelExp = charTotalExp - thisMaxLevelExp
     local nextLevelexp = nextMaxLevelexp - thisMaxLevelExp
-    local expToNextLevel = nextMaxLevelexp - charTotalExp
+    -- In case a server patches max exp displayed in the menu to be uncapped,
+    -- ensure the progress bar shows 100%.
+    local expToNextLevel = math.max(0, nextMaxLevelexp - charTotalExp)
     local progressAsFraction = 1
     if nextLevelexp ~= 0 then
-        progressAsFraction = math.floor(100 * (thisLevelExp / nextLevelexp)) / 100
+        progressAsFraction = thisLevelExp / nextLevelexp
+    end
+
+    UpdateXpTracker(charTotalExp)
+    local xpPerSecond = GetXpPerSecond()
+    local etaSeconds = -1
+    if xpPerSecond > 0 and expToNextLevel > 0 then
+        etaSeconds = expToNextLevel / xpPerSecond
     end
 
     -- Store the stats for the separate text window
     StatsWindow.currentLevel = charCurrentLevel
     StatsWindow.currentExp = charTotalExp
     StatsWindow.expToNextLevel = expToNextLevel
+    StatsWindow.xpPerSecond = xpPerSecond
+    StatsWindow.etaSeconds = etaSeconds
 
-    renderBarAndText(charCurrentLevel, charTotalExp, expToNextLevel, progressAsFraction)
+    renderBarAndText(charCurrentLevel, charTotalExp, expToNextLevel, progressAsFraction, xpPerSecond, etaSeconds)
 end
 
 -- Drawing
@@ -402,6 +492,7 @@ local function present()
     if options.configurationEnableWindow then
         ConfigurationWindow.open = true
         options.configurationEnableWindow = false
+        SaveOptions(options)
     end
 
     ConfigurationWindow.Update()
@@ -416,26 +507,74 @@ local function present()
         return
     end
 
-    -- Create the separate text window if enabled
-    if options.xpTextEnableWindow
-        and (options.xpTextHideWhenMenu == false or IsMenuOpen() == false)
-        and (options.xpTextHideWhenSymbolChat == false or IsSymbolChatOpen() == false)
-        and (options.xpTextHideWhenMenuUnavailable == false or IsMenuUnavailable() == false)
+    -- Create the separate text window(s) if enabled
+    if options.textwindow_enable
+        and (options.textwindow_hideWhenMenuOpen == false or IsMenuOpen() == false)
+        and (options.textwindow_hideWhenSymbolChatOpen == false or IsSymbolChatOpen() == false)
+        and (options.textwindow_hideWhenMenuNotAvailable == false or IsMenuUnavailable() == false)
     then
-        if options.xpTextTransparent then
-            imgui.PushStyleColor("WindowBg", 0, 0, 0, 0)
-        end
+        local tc = GetColorAsFloats(options.textwindow_percentColor)
+        local winFlags = { options.textwindow_noTitleBar, options.textwindow_noResize, options.textwindow_noMove, "AlwaysAutoResize" }
 
-        if changedOptions == true then
-            imgui.SetNextWindowPos(options.xpTextX, options.xpTextY, "Always");
-        end
+        if options.textwindow_splitWindows then
+            local rateLabel, rateMultiplier
+            if options.xpRatePerHour then
+                rateLabel, rateMultiplier = "XP/hr", 3600
+            else
+                rateLabel, rateMultiplier = "XP/min", 60
+            end
 
-        imgui.Begin("XP Stats", nil, { options.xpTextNoTitleBar, options.xpTextNoResize, options.xpTextNoMove, "AlwaysAutoResize" })
-        RenderStatsText(StatsWindow.currentLevel, StatsWindow.currentExp, StatsWindow.expToNextLevel)
-        imgui.End()
+            local etaValue
+            if StatsWindow.etaSeconds and StatsWindow.etaSeconds > 0 then
+                etaValue = FormatDuration(StatsWindow.etaSeconds)
+            else
+                etaValue = "--"
+            end
 
-        if options.xpTextTransparent then
-            imgui.PopStyleColor(1)
+            local rows = {
+                { show = options.xpEnableInfoLevel, title = "Level##xpbar",            x = options.stat_level_x, y = options.stat_level_y, label = "Lv",      value = string.format("%i", StatsWindow.currentLevel + 1) },
+                { show = options.xpEnableInfoTotal, title = "Total##xpbar",            x = options.stat_total_x, y = options.stat_total_y, label = "Total",   value = FormatComma(StatsWindow.currentExp) },
+                { show = options.xpEnableInfoTNL,   title = "TNL##xpbar",              x = options.stat_tnl_x,   y = options.stat_tnl_y,   label = "TNL",     value = FormatComma(StatsWindow.expToNextLevel) },
+                { show = options.xpEnableInfoRate,  title = rateLabel .. "##xpbar",    x = options.stat_rate_x,  y = options.stat_rate_y,  label = rateLabel, value = FormatComma((StatsWindow.xpPerSecond or 0) * rateMultiplier) },
+                { show = options.xpEnableInfoETA,   title = "ETA##xpbar",              x = options.stat_eta_x,   y = options.stat_eta_y,   label = "ETA",     value = etaValue },
+            }
+
+            for _, row in ipairs(rows) do
+                if row.show then
+                    if options.textwindow_transparent then
+                        imgui.PushStyleColor("WindowBg", 0, 0, 0, 0)
+                    end
+                    if changedOptions == true then
+                        imgui.SetNextWindowPos(row.x, row.y, "Always")
+                    end
+                    imgui.Begin(row.title, nil, winFlags)
+                    imgui.PushStyleColor("Text", tc.r, tc.g, tc.b, tc.a)
+                    StatRow(row.label, row.value)
+                    imgui.PopStyleColor()
+                    imgui.End()
+                    if options.textwindow_transparent then
+                        imgui.PopStyleColor(1)
+                    end
+                end
+            end
+        else
+            if options.textwindow_transparent then
+                imgui.PushStyleColor("WindowBg", 0, 0, 0, 0)
+            end
+
+            if changedOptions == true then
+                imgui.SetNextWindowPos(options.textwindow_x, options.textwindow_y, "Always");
+            end
+
+            imgui.Begin("XP Stats", nil, winFlags)
+            imgui.PushStyleColor("Text", tc.r, tc.g, tc.b, tc.a)
+            RenderStatsText(StatsWindow.currentLevel, StatsWindow.currentExp, StatsWindow.expToNextLevel, StatsWindow.xpPerSecond, StatsWindow.etaSeconds)
+            imgui.PopStyleColor()
+            imgui.End()
+
+            if options.textwindow_transparent then
+                imgui.PopStyleColor(1)
+            end
         end
     end
 
@@ -466,7 +605,7 @@ end
 
 -- Init
 local function init()
-    ConfigurationWindow = cfg.ConfigurationWindow(options)
+    ConfigurationWindow = cfg.ConfigurationWindow(options, DEFAULTS)
 
     local function mainMenuButtonHandler()
         ConfigurationWindow.open = not ConfigurationWindow.open

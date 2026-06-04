@@ -56,22 +56,26 @@ local StatsWindow = {
     expToNextLevel = 0,
     xpPerSecond = 0,
     etaSeconds = -1,
+    progressAsFraction = 0,
+    error = nil,
 }
 
 -- Sliding-window XP rate tracker (per-second precision)
 local XpTracker = {
     samples = {},
     windowSeconds = 60,
+    lastCharacterId = nil,
 }
 
-local function UpdateXpTracker(currentExp)
+local function UpdateXpTracker(currentExp, characterId)
     local now = os.time()
     local samples = XpTracker.samples
 
-    -- Character switch (exp went backwards): drop history
-    if #samples > 0 and currentExp < samples[#samples].exp then
+    -- Character switch: drop history
+    if characterId ~= XpTracker.lastCharacterId then
         XpTracker.samples = {}
         samples = XpTracker.samples
+        XpTracker.lastCharacterId = characterId
     end
 
     if #samples > 0 and samples[#samples].time == now then
@@ -424,22 +428,22 @@ local renderError = function(errorMsg)
     end
 end
 
-local DrawStuff = function()
+local function RefreshStats()
     local currentPlayerIndex = pso.read_u32(_PlayerMyIndex)
     local characterMemAddress = pso.read_u32(_PlayerArray + 4 * currentPlayerIndex)
     local pltData = pso.read_u32(_PLTPointer)
 
-    -- Check the player has selected a character
     if characterMemAddress == 0 then
-        renderError("Player data not found")
+        StatsWindow.error = "Player data not found"
         return
     end
 
-    -- Check that our player data is available
     if pltData == 0 then
-        renderError("PLT data not found")
+        StatsWindow.error = "PLT data not found"
         return
     end
+
+    StatsWindow.error = nil
 
     local myClass = pso.read_u8(characterMemAddress + 0x961)
     local charCurrentLevel = pso.read_u32(characterMemAddress + 0xE44)
@@ -464,24 +468,32 @@ local DrawStuff = function()
     local expToNextLevel = math.max(0, nextMaxLevelexp - charTotalExp)
     local progressAsFraction = 1
     if nextLevelexp ~= 0 then
-        progressAsFraction = thisLevelExp / nextLevelexp
+        progressAsFraction = math.max(0, math.min(1, thisLevelExp / nextLevelexp))
     end
 
-    UpdateXpTracker(charTotalExp)
+    UpdateXpTracker(charTotalExp, characterMemAddress)
     local xpPerSecond = GetXpPerSecond()
     local etaSeconds = -1
     if xpPerSecond > 0 and expToNextLevel > 0 then
         etaSeconds = expToNextLevel / xpPerSecond
     end
 
-    -- Store the stats for the separate text window
     StatsWindow.currentLevel = charCurrentLevel
     StatsWindow.currentExp = charTotalExp
     StatsWindow.expToNextLevel = expToNextLevel
     StatsWindow.xpPerSecond = xpPerSecond
     StatsWindow.etaSeconds = etaSeconds
+    StatsWindow.progressAsFraction = progressAsFraction
+end
 
-    renderBarAndText(charCurrentLevel, charTotalExp, expToNextLevel, progressAsFraction, xpPerSecond, etaSeconds)
+local DrawStuff = function()
+    if StatsWindow.error ~= nil then
+        renderError(StatsWindow.error)
+        return
+    end
+
+    renderBarAndText(StatsWindow.currentLevel, StatsWindow.currentExp, StatsWindow.expToNextLevel,
+        StatsWindow.progressAsFraction, StatsWindow.xpPerSecond, StatsWindow.etaSeconds)
 end
 
 -- Drawing
@@ -506,6 +518,8 @@ local function present()
     if options.enable == false then
         return
     end
+
+    RefreshStats()
 
     -- Create the separate text window(s) if enabled
     if options.textwindow_enable

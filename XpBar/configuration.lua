@@ -239,7 +239,9 @@ local function ConfigurationWindow(configuration, defaults)
             imgui.SameLine(0, 8)
             if imgui.Button("Confirm") then
                 for k, v in pairs(_defaults) do
-                    _configuration[k] = v
+                    if k ~= "configurationEnableWindow" then
+                        _configuration[k] = v
+                    end
                 end
                 this.changed = true
                 _resetConfirm = false
